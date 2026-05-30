@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>台北市即時雨量地圖</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: "Microsoft JhengHei", -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #f0f0f0;
+    }
+    /* 地圖與 p5 畫布 */
+    #map-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none; /* 讓滑鼠能穿透畫布去拖曳底層地圖 */
+      z-index: 10;
+    }
+
+    /* UI 介面層 (使用現代的毛玻璃特效) */
+    #ui-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none; /* UI 容器本身不阻擋點擊 */
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    /* 左側面板 */
+    #sidebar {
+      pointer-events: auto; /* 恢復面板的點擊與 Hover 能力 */
+      width: 280px;
+      height: calc(100vh - 40px);
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(10px); /* 毛玻璃效果 */
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 20px;
+      border-bottom: 1px solid #eee;
+    }
+    .panel-header h1 {
+      margin: 0 0 5px 0;
+      font-size: 20px;
+      color: #333;
+    }
+    .panel-header p {
+      margin: 0;
+      font-size: 12px;
+      color: #666;
+    }
+
+    /* 測站列表區塊 (加入卷軸) */
+    #station-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    .station-item {
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .station-item:hover {
+      background: rgba(0, 120, 255, 0.1);
+    }
+    .color-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      margin-right: 12px;
+      border: 1px solid rgba(0,0,0,0.2);
+    }
+    .station-name {
+      flex: 1;
+      font-size: 15px;
+      color: #333;
+      font-weight: 500;
+    }
+    .station-rain {
+      font-size: 14px;
+      color: #555;
+      font-weight: bold;
+    }
+
+    /* 右下角圖例 */
+    #legend {
+      pointer-events: auto;
+      align-self: flex-end;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(5px);
+      padding: 15px 20px;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    #legend h3 {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+      color: #333;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    .legend-item:last-child {
+      margin-bottom: 0;
+    }
+
+    /* 載入中遮罩 */
+    #loading-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(255,255,255,0.8);
+      z-index: 100;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 24px;
+      font-weight: bold;
+      color: #333;
+      pointer-events: none;
+      transition: opacity 0.5s;
+    }
+  </style>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+  <script src="https://unpkg.com/mappa-mundi/dist/mappa.js"></script>
+</head>
+<body>
+
+  <div id="map-container"></div>
+
+  <div id="loading-overlay">資料讀取中，請稍候...</div>
+
+  <div id="ui-layer">
+    <div id="sidebar">
+      <div class="panel-header">
+        <h1>台北市即時雨量</h1>
+        <p id="update-time">更新時間: 載入中...</p>
+      </div>
+      <div id="station-list">
+        </div>
+    </div>
+
+    <div id="legend">
+      <h3>降雨量分級</h3>
+      </div>
+  </div>
+
+  <script>
+    const stationCoords = {
+      "湖田國小": { lat: 25.1528, lon: 121.5323 },
+      "大屯國小": { lat: 25.1741, lon: 121.4925 },
+      "桃源國中": { lat: 25.1397, lon: 121.4914 },
+      "北投國小": { lat: 25.1321, lon: 121.5005 },
+      "陽明高中": { lat: 25.0945, lon: 121.5148 },
+      "太平國小": { lat: 25.0610, lon: 121.5111 },
+      "民生國中": { lat: 25.0602, lon: 121.5606 },
+      "中正國中": { lat: 25.0336, lon: 121.5201 },
+      "三興國小": { lat: 25.0303, lon: 121.5583 },
+      "格致國中": { lat: 25.1362, lon: 121.5387 },
+      "平等國小": { lat: 25.1278, lon: 121.5714 },
+      "至善國中": { lat: 25.1014, lon: 121.5489 },
+      "碧湖國小": { lat: 25.0811, lon: 121.5878 },
+      "東湖國小": { lat: 25.0689, lon: 121.6169 },
+      "瑠公國中": { lat: 25.0372, lon: 121.5847 },
+      "舊莊國小": { lat: 25.0402, lon: 121.6186 },
+      "博嘉國小": { lat: 25.0000, lon: 121.5886 },
+      "北政國中": { lat: 24.9861, lon: 121.5786 },
+      "長安國小": { lat: 25.0489, lon: 121.5283 },
+      "萬華國中": { lat: 25.0278, lon: 121.4986 },
+      "台灣大學(新)": { lat: 25.0175, lon: 121.5397 },
+      "雙園": { lat: 25.0232, lon: 121.4925 },
+      "中洲": { lat: 25.1235, lon: 121.4608 }
+    };
+
+    let myMap;
+    let canvas;
+    const mappa = new Mappa('Leaflet');
+
+    const options = {
+      lat: 25.08,
+      lng: 121.54,
+      zoom: 12,
+      style: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    };
+
+    let mergedData = [];
+    let isRainingOverall = false;
+    let hoveredStationUI = ""; // 記錄從 HTML 列表 Hover 的站名
+    let sunAngle = 0;
+    let rainDrops = [];
+
+    const rainLevels = [
+      { max: 0, color: '#FFD700', label: "0 mm (無雨)" },
+      { max: 2, color: '#87CEEB', label: "0.1 - 2 mm (微雨)" },
+      { max: 10, color: '#00FF00', label: "2 - 10 mm (小雨)" },
+      { max: 20, color: '#FFFF00', label: "10 - 20 mm (陣雨)" },
+      { max: 40, color: '#FFA500', label: "20 - 40 mm (大雨)" },
+      { max: Infinity, color: '#FF0000', label: "> 40 mm (豪雨)" }
+    ];
+
+    function setup() {
+      // 畫布蓋在地圖上
+      canvas = createCanvas(windowWidth, windowHeight);
+      canvas.parent('map-container');
+      
+      myMap = mappa.tileMap(options);
+      myMap.overlay(canvas);
+
+      for (let i = 0; i < 30; i++) {
+        rainDrops.push({ x: random(-40, 40), y: random(-40, 40), speed: random(3, 7) });
+      }
+
+      buildLegendUI();
+      fetchRainData();
+      setInterval(fetchRainData, 60000);
+    }
+
+    function draw() {
+      clear();
+
+      let currentHoverMap = "";
+
+      // 繪製地圖測站
+      for (let i = 0; i < mergedData.length; i++) {
+        let station = mergedData[i];
+        let pos = myMap.latLngToPixel(station.lat, station.lon);
+        
+        // 判斷滑鼠是否在 p5 畫布內的點上 (只有當滑鼠不在左側面板時才判斷，避免重疊干擾)
+        let distToMouse = dist(mouseX, mouseY, pos.x, pos.y);
+        let isHoveredByMouse = (distToMouse < 15 && mouseX > 300); // 面板寬約 300
+        
+        // 如果 HTML 列表 Hover 或是地圖點 Hover
+        let isHovered = (hoveredStationUI === station.name) || isHoveredByMouse;
+        if (isHoveredByMouse) currentHoverMap = station.name;
+
+        // 優化：極端天氣(大於40mm) 加入呼吸燈動畫效果
+        let baseRadius = isHovered ? 35 : 15;
+        if (station.rain > 40 && !isHovered) {
+          // 利用 sin 函數產生忽大忽小的效果
+          baseRadius = 15 + sin(frameCount * 0.1) * 6; 
+        }
+
+        fill(getRainColor(station.rain));
+        stroke(50);
+        strokeWeight(station.rain > 40 && !isHovered ? 2 : 1); // 豪雨加粗邊框
+        ellipse(pos.x, pos.y, baseRadius, baseRadius);
+
+        // 如果被 Hover，顯示標籤
+        if (isHovered) {
+          fill(255, 255, 255, 230);
+          noStroke();
+          rect(pos.x + 20, pos.y - 20, 150, 50, 5);
+          fill(0);
+          textSize(15);
+          textStyle(BOLD);
+          text(station.name, pos.x + 25, pos.y - 2);
+          textStyle(NORMAL);
+          textSize(13);
+          fill(50);
+          text(`雨量: ${station.rain} mm`, pos.x + 25, pos.y + 18);
+        }
+      }
+
+      drawWeatherEffect();
+    }
+
+    async function fetchRainData() {
+      const apiUrl = "https://wic.gov.taipei/OpenData/API/Rain/Get?stationNo=&loginId=open_rain&dataKey=85452C1D";
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
+      
+      try {
+        let response = await fetch(proxyUrl);
+        if (!response.ok) throw new Error("網路連線問題");
+        let data = await response.json();
+        let actualData = JSON.parse(data.contents);
+        processData(actualData.data);
+        
+        // 隱藏載入中畫面
+        document.getElementById('loading-overlay').style.opacity = '0';
+        setTimeout(() => document.getElementById('loading-overlay').style.display = 'none', 500);
+
+      } catch (error) {
+        console.error("無法取得資料:", error);
+        document.getElementById('loading-overlay').innerText = "資料載入失敗，請重新整理網頁";
+      }
+    }
+
+    function processData(apiData) {
+      mergedData = [];
+      let hasRain = false;
+
+      if (apiData && apiData.length > 0) {
+        document.getElementById('update-time').innerText = "更新時間: " + (apiData[0].recTime || "未知時間");
+      }
+
+      apiData.forEach(station => {
+        let name = station.stationName;
+        if (stationCoords[name]) {
+          let rainValue = parseFloat(station.rain10);
+          if (isNaN(rainValue)) rainValue = 0;
+          if (rainValue > 0) hasRain = true;
+
+          mergedData.push({
+            name: name,
+            lat: stationCoords[name].lat,
+            lon: stationCoords[name].lon,
+            rain: rainValue
+          });
+        }
+      });
+
+      // 依照雨量大小排序，雨量大的排在列表前面
+      mergedData.sort((a, b) => b.rain - a.rain);
+      isRainingOverall = hasRain;
+      
+      buildStationListUI();
+    }
+
+    // 利用 DOM 動態生成左側列表 (取代原本的 Canvas 繪圖)
+    function buildStationListUI() {
+      const listContainer = document.getElementById('station-list');
+      listContainer.innerHTML = ''; // 清空舊資料
+
+      mergedData.forEach(station => {
+        let item = document.createElement('div');
+        item.className = 'station-item';
+        
+        // 綁定 Hover 事件，連動 p5.js 畫布
+        item.onmouseenter = () => hoveredStationUI = station.name;
+        item.onmouseleave = () => hoveredStationUI = "";
+
+        let color = getRainColor(station.rain);
+        
+        item.innerHTML = `
+          <div class="color-dot" style="background-color: ${color}"></div>
+          <div class="station-name">${station.name}</div>
+          <div class="station-rain">${station.rain} mm</div>
+        `;
+        listContainer.appendChild(item);
+      });
+    }
+
+    // 建立右下角圖例 UI
+    function buildLegendUI() {
+      const legendContainer = document.getElementById('legend');
+      rainLevels.forEach(lvl => {
+        let item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML = `
+          <div class="color-dot" style="background-color: ${lvl.color}; margin-right: 8px;"></div>
+          <span>${lvl.label}</span>
+        `;
+        legendContainer.appendChild(item);
+      });
+    }
+
+    function getRainColor(rain) {
+      for (let level of rainLevels) {
+        if (rain <= level.max) return level.color;
+      }
+      return rainLevels[rainLevels.length - 1].color;
+    }
+
+    function drawWeatherEffect() {
+      push();
+      translate(width - 80, 80);
+      
+      fill(255, 255, 255, 150);
+      noStroke();
+      ellipse(0, 0, 100, 100);
+
+      if (isRainingOverall) {
+        fill(150, 150, 150);
+        ellipse(0, -10, 60, 40);
+        ellipse(-20, 0, 40, 30);
+        ellipse(20, 0, 40, 30);
+
+        stroke(100, 150, 255);
+        strokeWeight(2);
+        for (let drop of rainDrops) {
+          line(drop.x, drop.y, drop.x - 5, drop.y + 10);
+          drop.y += drop.speed;
+          drop.x -= drop.speed * 0.5;
+          if (drop.y > 40) {
+            drop.y = random(-40, -10);
+            drop.x = random(-40, 40);
+          }
+        }
+      } else {
+        rotate(sunAngle);
+        sunAngle += 0.01;
+        fill('#FFD700');
+        noStroke();
+        ellipse(0, 0, 40, 40);
+        stroke('#FFD700');
+        strokeWeight(3);
+        for (let i = 0; i < 8; i++) {
+          line(0, -25, 0, -40);
+          rotate(PI / 4);
+        }
+      }
+      pop();
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+    }
+  </script>
+</body>
+</html>
